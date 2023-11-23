@@ -1,3 +1,237 @@
-My name is Tin
-I'm 20 years old
-I'm Developer Hacker
+--Cau 1a
+--Insert
+create trigger trg_Posts_Insert
+on Posts
+for insert 
+as
+begin
+    update Accounts
+    set NumberOfPosts = NumberOfPosts + 1
+    from Accounts join inserted on Accounts.AccountId = inserted.AccountId;
+end
+go
+
+--Delete
+create trigger trg_Posts_Delete
+on Posts
+for delete
+as
+begin
+    update Accounts
+    set NumberOfPosts = NumberOfPosts - 1
+    from Accounts JOIN deleted ON Accounts.AccountId = deleted.AccountId;
+end
+go
+
+--Cau 1b
+--Insert
+create trigger trg_Comments_Insert
+on Comments
+for insert
+as
+begin
+    -- Cập nhật số lượng bài bình luận của tài khoản
+    update Accounts
+    set NumberOfComments = NumberOfComments + 1
+    from Accounts join inserted on Accounts.AccountId = inserted.AccountId;
+
+    -- Cập nhật số lượng bài bình luận của bài viết
+    update Posts
+    set NumberOfComments = NumberOfComments + 1
+    from Posts join inserted on Posts.PostId = inserted.PostId;
+end
+go
+
+--Delete
+create trigger trg_Comments_Delete
+on Comments
+for delete
+as
+begin
+    -- Cập nhật số lượng bài bình luận của tài khoản
+    update Accounts
+    set  NumberOfComments = NumberOfComments - 1
+    from Accounts join deleted on Accounts.AccountId = deleted.AccountId;
+
+    -- Cập nhật số lượng bài bình luận của bài viết
+    update Posts
+    set NumberOfComments = NumberOfComments - 1
+    from Posts join deleted on Posts.PostId = deleted.PostId;
+end
+go
+
+--Cau 2a
+if exists (select * from sys.objects where name = 'proc_Posts_Insert')
+          drop procedure proc_Posts_Insert
+go
+create procedure proc_Posts_Insert
+					@PostTitle nvarchar(255),
+					@PostContent nvarchar(2000),
+					@AccountId int,
+					@PostId int output
+as 
+begin
+	set nocount on;
+	set @PostId = 0
+
+	if len(@PostTitle) > 0 and len(@PostContent) > 0 and @AccountId > 0
+		begin
+			insert into Posts(PostTitle,PostContent,AccountId)
+			values (@PostTitle,@PostContent,@AccountId)
+			set @PostId = @@IDENTITY
+		end
+end
+go
+
+--Cau 2b
+if exists (select * from sys.objects where name = 'proc_Accounts_Update')
+          drop procedure proc_Accounts_Update
+go
+create procedure proc_Accounts_Update
+						@AccountId int,
+						@AccountName nvarchar(100),
+						@Gender nvarchar(50),
+						@Email nvarchar(50),
+						@Result nvarchar(255) output
+as
+begin
+	set nocount on;
+	set @Result = ''
+
+	if exists (select * from Accounts where AccountId = @AccountId)
+		begin
+			update Accounts
+			set AccountName = @AccountName,
+				Gender = @Gender,
+				Email = @Email
+			where AccountId = @AccountId;
+            set @Result = '';
+		end
+	else
+		begin
+			set @Result = 'Tài khoản không tồn tại'
+		end
+end
+go
+
+--Cau 2c
+if exists (select * from sys.objects where name = 'proc_Posts_Select')
+          drop procedure proc_Posts_Select
+go
+create procedure proc_Posts_Select
+					@SearchValue nvarchar(255) = N'',
+					@Page int = 1,
+					@PageSize int = 20,
+					@RowCount int output,
+					@PageCount int output
+as
+begin
+	set nocount on;
+	-- Tìm tổng số dòng dữ liệu tìm được
+	select @RowCount = count(*)
+	from Posts
+	where (@SearchValue = N'' OR
+			PostTitle LIKE '%' + @SearchValue + '%' OR
+			PostContent LIKE '%' + @SearchValue + '%'
+		   )
+	
+	if(@PageSize = 0)
+		set @PageCount = 1;
+	else
+		begin
+			 set @PageCount = @RowCount / @PageSize;
+			 if(@RowCount % @PageSize > 0)
+				set @PageCount += 1;
+		end;
+	if (@SearchValue = N'' or @SearchValue is null) or @PageSize = 0
+		begin
+			select * from Posts
+			return
+		end
+    -- Truy vấn dữ liệu phân trang
+    SELECT *
+    FROM Posts
+    WHERE @SearchValue = N'' OR
+		  PostTitle LIKE '%' + @SearchValue + '%' OR
+		  PostContent LIKE '%' + @SearchValue + '%'
+    ORDER BY PostId 
+    OFFSET @PageSize * (@Page-1) ROWS
+    FETCH NEXT @PageSize ROWS ONLY;	
+end
+go
+
+--Cau 2d
+if exists (select * from sys.objects where name = 'proc_CountPostByYear')
+          drop procedure proc_CountPostByYear
+go
+create procedure proc_CountPostByYear
+						@FromYear int,
+						@ToYear int
+as
+begin
+	set nocount on;
+	declare @CurrentYear int = @FromYear;
+
+    while @CurrentYear <= @ToYear
+		begin
+			select
+				@CurrentYear AS Years,
+				ISNULL(SUM(CASE WHEN P.PostTitle = 'Post' THEN 1 ELSE 0 END), 0) AS PostCount,
+				ISNULL(SUM(CASE WHEN P.PostTitle = 'Discussion' THEN 1 ELSE 0 END), 0) AS DiscussionCount
+			from Posts P
+			where year(P.CreateTime) = @CurrentYear;
+
+			set @CurrentYear = @CurrentYear + 1;
+		end
+end
+go
+    
+--Cau 3a
+if exists (select * from sys.objects where name = 'func_CountPost')
+           drop function func_CountPost
+go
+create function func_CountPost
+(
+    @From date,
+    @To date
+)
+returns int
+as
+begin
+    declare @TotalPosts int;
+
+    select @TotalPosts = COUNT(*) 
+    from Posts
+    where CreateTime >= @From AND CreateTime <= @To;
+
+    return @TotalPosts;
+end
+go
+
+--Cau 3b
+if exists (select * from sys.objects where name = 'func_CountPostByYear')
+           drop function func_CountPostByYear
+go
+create function func_CountPostByYear
+(
+    @FromYear int,
+    @ToYear int
+)
+returns table
+as
+return
+(
+   with YearsCTE as (
+        select @FromYear as Years
+        union all
+        select Years + 1
+        from YearsCTE
+        where Years < @ToYear
+    )
+    select  Y.Years,
+			ISNULL(COUNT(CASE WHEN P.PostTitle = 'Post' THEN 1 END), 0) AS PostCount,
+			ISNULL(COUNT(CASE WHEN P.PostTitle = 'Discussion' THEN 1 END), 0) AS DiscussionCount
+    from    YearsCTE Y LEFT JOIN Posts P ON YEAR (P.CreateTime) = Y.Years
+    group by Y.Years
+)
+go
